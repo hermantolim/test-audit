@@ -246,11 +246,11 @@ async function insertDenormalized(
       _createdAt: new Date(),
     }
   } else {
-    const { _id: prevId, ...prevBody } = prev
+    const { _id: prevId, previous, ...prevBody } = prev
     nextRev = {
       ...prevBody,
       ...item,
-      previous: prev,
+      previous: prevBody,
       event: 'updated',
       _id: newId,
       _createdAt: new Date(),
