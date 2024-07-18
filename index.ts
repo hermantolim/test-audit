@@ -250,7 +250,14 @@ async function insertDenormalized(
     nextRev = {
       ...prevBody,
       ...item,
-      previous: prevBody,
+      previous: await col.findOne(
+        { _id: prevId },
+        {
+          projection: {
+            previous: 0,
+          },
+        },
+      ),
       event: 'updated',
       _id: newId,
       _createdAt: new Date(),
@@ -282,14 +289,7 @@ async function insertDenormalized(
       if (item?.event === 'created') {
         nextRev.slides = (nextRev.slides || []).map((s: SlideSchema) => {
           if (s.object.id === item.object.slideId) {
-            s.tracks = [
-              ...(s.tracks || []),
-              {
-                ...item,
-                _createdAt: new Date(),
-                _id: new ObjectId(),
-              },
-            ]
+            s.tracks = [...(s.tracks || []), item as TrackSchema]
             return s
           }
           return s
@@ -342,7 +342,10 @@ async function main() {
   const updateSlide = await insertSlide(db, sampleSlideUpdate)
   const newTrack = await insertTrack(db, sampleTrack[0])
   const newTrack2 = await insertTrack(db, sampleTrack[1])
-  const deleteSlide = await insertSlide(db, sampleSlide)
+  const deleteSlide = await insertSlide(db, {
+    ...sampleSlide,
+    event: 'deleted',
+  })
 
   const all = await denormalizedRevAudits
     .find(
