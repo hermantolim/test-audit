@@ -1,6 +1,7 @@
 import { Db, MongoClient, ObjectId } from 'mongodb'
 import { deepmerge } from 'deepmerge-ts'
 import fs from 'fs/promises'
+import { randomUUID } from 'node:crypto'
 
 type Obj = {
   id: string
@@ -248,16 +249,11 @@ async function insertDenormalized(
   } else {
     const { _id: prevId, previous, ...prevBody } = prev
     nextRev = {
+      /// use structured clone for deep copy
+      /// as prevBody could be change by nextRev
       ...prevBody,
       ...item,
-      previous: await col.findOne(
-        { _id: prevId },
-        {
-          projection: {
-            previous: 0,
-          },
-        },
-      ),
+      previous: prevId,
       event: 'updated',
       _id: newId,
       _createdAt: new Date(),
@@ -337,11 +333,20 @@ async function main() {
     'denormalizedRevAudits',
   )
 
+  const sampleSlide2 = {
+    ...sampleSlide,
+    object: {
+      ...sampleSlide.object,
+      id: randomUUID(),
+    },
+  }
+
   const newRev = await insertRev(db, sampleRev)
   const newSlide = await insertSlide(db, sampleSlide)
   const updateSlide = await insertSlide(db, sampleSlideUpdate)
   const newTrack = await insertTrack(db, sampleTrack[0])
   const newTrack2 = await insertTrack(db, sampleTrack[1])
+  const newSlide2 = await insertSlide(db, sampleSlide2)
   const deleteSlide = await insertSlide(db, {
     ...sampleSlide,
     event: 'deleted',
