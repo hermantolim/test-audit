@@ -1,0 +1,23 @@
+{
+  "name": "testmongo",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.ts",
+  "scripts": {
+    "dev": "tsc && node ./index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/node": "^20.14.11",
+    "prettier": "^3.3.3",
+    "typescript": "^5.5.3"
+  },
+  "dependencies": {
+    "deepmerge-ts": "^7.0.3",
+    "diff": "^5.2.0",
+    "mongodb": "^6.8.0",
+    "mongoose": "^8.5.1"
+  }
+}
