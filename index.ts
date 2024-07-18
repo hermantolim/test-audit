@@ -250,6 +250,7 @@ async function insertDenormalized(
     nextRev = {
       ...prevBody,
       ...item,
+      previous: prev,
       event: 'updated',
       _id: newId,
       _createdAt: new Date(),
