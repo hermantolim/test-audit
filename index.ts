@@ -2,6 +2,15 @@ import { Db, MongoClient, ObjectId } from 'mongodb'
 import { deepmerge } from 'deepmerge-ts'
 import fs from 'fs/promises'
 import { randomUUID } from 'node:crypto'
+import {
+  sampleRev,
+  sampleSlide1,
+  sampleSlide2,
+  sampleSlideUpdate1,
+  sampleTrack1,
+  sampleTrack2,
+  sampleTrack3,
+} from './sample'
 
 type Obj = {
   id: string
@@ -21,7 +30,7 @@ interface Entity<T extends Obj> {
 
 interface TrackObj extends Obj {
   type: string
-  seconds: number
+  seconds: number | null
   slideId: string
   questions: string[]
 }
@@ -31,10 +40,16 @@ interface SlideObj extends Obj {
   type: 'media' | 'elearn'
   mediaUrl: string | null
   revisionId: string
+  createdAt: Date
 }
 
 interface RevObj extends Obj {
   status: string
+  major: number
+  minor: number
+  patch: number
+  id: string
+  createdAt: Date
 }
 
 interface TrackSchema extends Entity<TrackObj> {
@@ -46,6 +61,7 @@ interface SlideSchema extends Entity<SlideObj> {
   _id: ObjectId
   _createdAt: Date
   tracks: TrackSchema[]
+  previous: null | SlideSchema
 }
 
 interface RevisionSchema extends Entity<RevObj> {
@@ -53,82 +69,6 @@ interface RevisionSchema extends Entity<RevObj> {
   _createdAt: Date
   previous: null | RevisionSchema
 }
-
-const sampleRev: Entity<RevObj> = {
-  entity: 'LessonRevision',
-  event: 'created',
-  logTime: new Date('2024-07-17T16:10:06+00:00'),
-  object: {
-    status: 'draft',
-    id: '0190c175-42fb-7ac4-9d4b-738f1515733c',
-  },
-  blameUser: {
-    email: 'edclass_staff@edclass.com',
-  },
-}
-const sampleSlide: Entity<SlideObj> = {
-  entity: 'LessonSlide',
-  event: 'created',
-  logTime: new Date('2024-07-17T16:10:30+00:00'),
-  object: {
-    position: 1,
-    type: 'media',
-    mediaUrl: null,
-    id: '0190c175-a3d4-7696-9238-e2a377b5f746',
-    revisionId: '0190c175-42fb-7ac4-9d4b-738f1515733c',
-  },
-  blameUser: {
-    email: 'edclass_staff@edclass.com',
-  },
-}
-const sampleSlideUpdate: Entity<SlideObj> = {
-  entity: 'LessonSlide',
-  event: 'updated',
-  logTime: new Date('2024-07-17T16:10:47+00:00'),
-  object: {
-    position: 1,
-    type: 'media',
-    mediaUrl:
-      '/file/stream/edclass-dev-internal/lessons/11/revisions/rev-01J30QAGPRWFTNP68NB8GWSHB2/lesson-667fb8e880a912-14719366-revision-667fb8e8998d25-83035981recording-2024-06-12-162525-mp4.mp4',
-    id: '0190c175-a3d4-7696-9238-e2a377b5f746',
-    revisionId: '0190c175-42fb-7ac4-9d4b-738f1515733c',
-  },
-  blameUser: {
-    email: 'edclass_staff@edclass.com',
-  },
-}
-const sampleTrack: Entity<TrackObj>[] = [
-  {
-    entity: 'LessonSlideTrack',
-    event: 'created',
-    logTime: new Date('2024-07-17T16:11:15+00:00'),
-    object: {
-      id: '0190c176-5111-79a0-ba0e-65f35adf4508',
-      type: 'question',
-      seconds: 6,
-      slideId: '0190c175-a3d4-7696-9238-e2a377b5f746',
-      questions: [],
-    },
-    blameUser: {
-      email: 'edclass_staff@edclass.com',
-    },
-  },
-  {
-    entity: 'LessonSlideTrack',
-    event: 'created',
-    logTime: new Date('2024-07-17T16:11:27+00:00'),
-    object: {
-      id: '0190c176-824e-7892-82ce-65505032ee03',
-      type: 'question',
-      seconds: 12,
-      slideId: '0190c175-a3d4-7696-9238-e2a377b5f746',
-      questions: [],
-    },
-    blameUser: {
-      email: 'edclass_staff@edclass.com',
-    },
-  },
-]
 
 async function insertRev(db: Db, rev: Entity<RevObj>) {
   const inserted = await db.collection('revAudits').insertOne({
@@ -141,7 +81,7 @@ async function insertRev(db: Db, rev: Entity<RevObj>) {
   })
 }
 
-async function insertSlide(db: Db, slide: Entity<SlideObj>) {
+async function insertSlide(db: Db, { ...slide }: Entity<SlideObj>) {
   const revAudits = await db.collection('revAudits')
   const slideAudits = await db.collection('slideAudits')
   const rev = await revAudits.findOne(
@@ -159,7 +99,13 @@ async function insertSlide(db: Db, slide: Entity<SlideObj>) {
     ...slide,
     _createdAt: new Date(),
   }
+
   const inserted = await slideAudits.insertOne(newSlide)
+
+  await insertDenormalizedSlide(db, {
+    ...newSlide,
+    _id: inserted.insertedId,
+  })
 
   await insertDenormalized(db, rev! as any, {
     type: 'slide',
@@ -195,6 +141,16 @@ async function insertTrack(db: Db, track: Entity<TrackObj>) {
     _createdAt: new Date(),
   }
   const trackId = await trackAudits.insertOne(newTrack)
+
+  await insertDenormalizedSlide(
+    db,
+    slide! as any,
+    {
+      _id: trackId.insertedId,
+      ...newTrack,
+    } as Entity<TrackObj>,
+  )
+
   await insertDenormalized(db, rev! as any, {
     type: 'track',
     item: {
@@ -204,14 +160,75 @@ async function insertTrack(db: Db, track: Entity<TrackObj>) {
   })
 }
 
+async function insertDenormalizedSlide(
+  db: Db,
+  item: Entity<SlideObj> | SlideSchema,
+  children?: Entity<TrackObj>,
+) {
+  const col = db.collection<SlideSchema>('denormalizedSlideAudits')
+
+  const prev = await col.findOne(
+    {
+      'object.id': item.object.id,
+    },
+    {
+      sort: {
+        _createdAt: -1,
+      },
+    },
+  )
+
+  const newId = new ObjectId()
+  let nextSlide
+  if (prev === null) {
+    nextSlide = {
+      ...item,
+      previous: null,
+      tracks: [] as TrackSchema[],
+      _id: newId,
+      _createdAt: new Date(),
+    }
+  } else {
+    const { _id: prevId, previous, ...prevBody } = prev
+    nextSlide = {
+      /// use structured clone for deep copy
+      /// as prevBody could be changed by nextSlide
+      ...prevBody,
+      ...item,
+      previous: prevId,
+      event: 'updated',
+      _id: newId,
+      _createdAt: new Date(),
+    }
+  }
+
+  if (children) {
+    if (children.event === 'created') {
+      nextSlide.tracks = [...(nextSlide.tracks || []), children as TrackSchema]
+    } else if (children.event === 'updated') {
+      nextSlide.tracks = (nextSlide.tracks || []).map((s) => {
+        if (s.object.id === children.object.id) {
+          return deepmerge(s, children) as TrackSchema
+        }
+        return s as TrackSchema
+      })
+    } else if (children.event === 'deleted') {
+      nextSlide.tracks = (nextSlide.tracks || []).filter((s: TrackSchema) => {
+        return s.object.id !== children.object.id
+      })
+    } else {
+      // noop
+    }
+  }
+
+  return col.insertOne(nextSlide as SlideSchema)
+}
 async function insertDenormalized(
   db: Db,
   item:
     | Entity<RevObj>
     | (RevisionSchema & {
-        slides: (SlideSchema & {
-          tracks: TrackSchema[]
-        })[]
+        slides: SlideSchema[]
       }),
   children?: {
     type: 'slide' | 'track'
@@ -220,9 +237,7 @@ async function insertDenormalized(
 ) {
   const col = db.collection<
     RevisionSchema & {
-      slides: (SlideSchema & {
-        tracks: TrackSchema[]
-      })[]
+      slides: SlideSchema[]
     }
   >('denormalizedRevAudits')
   const prev = await col.findOne(
@@ -322,49 +337,417 @@ async function insertDenormalized(
   return col.insertOne(nextRev as any)
   //
 }
+
+interface Slide {
+  id: string
+  tracks: Track[]
+}
+
+interface Track {
+  id: string
+  lessonSlideId: string
+  type: string
+  seconds: number | null
+  setting: Record<string, unknown>
+  questions: Record<string, unknown>[]
+}
+
+function transformSlide(data: SlideSchema): Record<string, unknown> {
+  const { _id, object, ...rest } = data
+  return {
+    _id,
+    lessonSlide: object,
+    //lessonSlide: {
+    ...rest,
+    //},
+  }
+}
+
+function transformTrack(data: TrackSchema) {
+  const { _id, object, blameUser } = data
+  return object
+}
+
+function transformSlide2(
+  data: SlideSchema,
+  depth: number,
+): Record<string, unknown> {
+  const { tracks, object, previous, ...rest } = data
+
+  const dt: Record<string, unknown> = {
+    ...rest,
+    lessonSlide: {
+      ...object,
+      tracks: tracks.map(transformTrack),
+    },
+  }
+
+  if (depth === 0 && Boolean(previous)) {
+    dt['previous'] = transformSlide2(previous as SlideSchema, depth + 1)
+    dt['previous'] = (dt['previous'] as Record<string, Record<string, unknown>>)
+      .lessonSlide as Record<string, unknown>
+  }
+
+  return dt
+}
+
+function transformRev(
+  data: Record<string, unknown>,
+  depth: number,
+): Record<string, unknown> {
+  const { slides, object, previous, ...rest } =
+    (data as Record<string, unknown> & {
+      _id: ObjectId
+      object: RevObj
+    }) || {}
+
+  const dt: Record<string, unknown> = {
+    ...rest,
+    lessonRevision: {
+      version: `${object.major}.${object.minor}.${object.patch}`,
+      status: object.status,
+      id: `${object?.id}`,
+      createdAt: `${object?.createdAt}`,
+      slides: ((slides || []) as SlideSchema[]).map((s) => {
+        return transformSlide(s)
+      }),
+    },
+  }
+
+  if (depth === 0 && Boolean(previous)) {
+    dt['previous'] = transformRev(
+      previous as Record<string, unknown>,
+      depth + 1,
+    )
+    dt['previous'] = (dt['previous'] as Record<string, Record<string, unknown>>)
+      .lessonRevision as Record<string, unknown>
+  }
+
+  return dt
+}
+
 async function main() {
   const client = new MongoClient('mongodb://root:root@localhost:27018')
   const db = client.db('rootdb')
 
+  await db.dropCollection('revAudits')
   await db.createCollection('revAudits')
+  await db.dropCollection('slideAudits')
   await db.createCollection('slideAudits')
+  await db.dropCollection('trackAudits')
   await db.createCollection('trackAudits')
+  await db.dropCollection('denormalizedSlideAudits')
+  const denormalizedSlideAudits = await db.createCollection(
+    'denormalizedSlideAudits',
+  )
+  await db.dropCollection('denormalizedRevAudits')
   const denormalizedRevAudits = await db.createCollection(
     'denormalizedRevAudits',
   )
 
-  const sampleSlide2 = {
-    ...sampleSlide,
-    object: {
-      ...sampleSlide.object,
-      id: randomUUID(),
-    },
-  }
-
-  const newRev = await insertRev(db, sampleRev)
-  const newSlide = await insertSlide(db, sampleSlide)
-  const updateSlide = await insertSlide(db, sampleSlideUpdate)
-  const newTrack = await insertTrack(db, sampleTrack[0])
-  const newTrack2 = await insertTrack(db, sampleTrack[1])
-  const newSlide2 = await insertSlide(db, sampleSlide2)
-  const deleteSlide = await insertSlide(db, {
-    ...sampleSlide,
+  await insertRev(db, sampleRev as Entity<RevObj>)
+  await insertSlide(db, sampleSlide1 as Entity<SlideObj>)
+  await insertSlide(db, sampleSlideUpdate1 as Entity<SlideObj>)
+  await insertTrack(db, sampleTrack1 as Entity<TrackObj>)
+  await insertTrack(db, sampleTrack2 as Entity<TrackObj>)
+  await insertSlide(db, sampleSlide2 as Entity<SlideObj>)
+  await insertTrack(db, sampleTrack3 as Entity<TrackObj>)
+  await insertTrack(db, {
+    ...sampleTrack2,
     event: 'deleted',
-  })
+  } as Entity<TrackObj>)
+
+  /*
+  await insertSlide(db, {
+    ...sampleSlide2,
+    event: 'deleted',
+  } as Entity<SlideObj>)*/
 
   const all = await denormalizedRevAudits
-    .find(
-      {},
+    .aggregate([
       {
-        sort: {
-          _createdAt: 1,
+        $lookup: {
+          from: 'denormalizedRevAudits',
+          localField: 'previous',
+          foreignField: '_id',
+          as: 'previous',
         },
       },
-    )
+      {
+        $project: {
+          id: 0,
+          createdAt: 0,
+          logTime: 0,
+          entity: 0,
+          ipAddress: 0,
+          userAgent: 0,
+          previous: {
+            id: 0,
+            createdAt: 0,
+            previous: 0,
+            logTime: 0,
+            entity: 0,
+            ipAddress: 0,
+            userAgent: 0,
+            slides: {
+              id: 0,
+              createdAt: 0,
+              logTime: 0,
+              entity: 0,
+              ipAddress: 0,
+              userAgent: 0,
+              object: 0,
+              tracks: {
+                setting: 0,
+                tags: 0,
+                logTime: 0,
+                entity: 0,
+                ipAddress: 0,
+                userAgent: 0,
+                object: 0,
+              },
+            },
+          },
+          slides: {
+            id: 0,
+            createdAt: 0,
+            logTime: 0,
+            entity: 0,
+            ipAddress: 0,
+            userAgent: 0,
+            object: 0,
+            tracks: {
+              setting: 0,
+              tags: 0,
+              logTime: 0,
+              entity: 0,
+              ipAddress: 0,
+              userAgent: 0,
+              object: 0,
+            },
+          },
+        },
+      },
+      /*{
+        $project: {
+          object: {
+            id: 1,
+            major: 1,
+            minor: 1,
+            patch: 1,
+            createdAt: 1,
+          },
+          previous: {
+            object: {
+              id: 1,
+              major: 1,
+              minor: 1,
+              patch: 1,
+              createdAt: 1,
+            },
+          },
+        },
+      },*/
+    ])
+    .map((item) => {
+      return {
+        ...item,
+        previous: Array.isArray(item.previous) ? item.previous[0] : null,
+      }
+    })
     .toArray()
-  await fs.writeFile('test.json', JSON.stringify(all, null, 2), {
-    encoding: 'utf-8',
-  })
+
+  //const transformed = transformRev(all as RevisionSchema)
+
+  const dt = await denormalizedRevAudits
+    .aggregate([
+      {
+        $lookup: {
+          from: 'denormalizedRevAudits',
+          localField: 'previous',
+          foreignField: '_id',
+          as: 'previous',
+        },
+      },
+      {
+        $project: {
+          id: 0,
+          createdAt: 0,
+          _createdAt: 0,
+          logTime: 0,
+          entity: 0,
+          ipAddress: 0,
+          userAgent: 0,
+          previous: {
+            id: 0,
+            createdAt: 0,
+            _createdAt: 0,
+            previous: 0,
+            logTime: 0,
+            entity: 0,
+            ipAddress: 0,
+            userAgent: 0,
+            slides: {
+              id: 0,
+              createdAt: 0,
+              _createdAt: 0,
+              logTime: 0,
+              entity: 0,
+              ipAddress: 0,
+              userAgent: 0,
+              tracks: {
+                setting: 0,
+                tags: 0,
+                id: 0,
+                createdAt: 0,
+                _createdAt: 0,
+                logTime: 0,
+                entity: 0,
+                ipAddress: 0,
+                userAgent: 0,
+              },
+            },
+          },
+          slides: {
+            id: 0,
+            createdAt: 0,
+            _createdAt: 0,
+            logTime: 0,
+            entity: 0,
+            ipAddress: 0,
+            userAgent: 0,
+            tracks: {
+              setting: 0,
+              tags: 0,
+              id: 0,
+              createdAt: 0,
+              _createdAt: 0,
+              logTime: 0,
+              entity: 0,
+              ipAddress: 0,
+              userAgent: 0,
+            },
+          },
+        },
+      },
+      /*{
+        $project: {
+          object: {
+            id: 1,
+            major: 1,
+            minor: 1,
+            patch: 1,
+            createdAt: 1,
+          },
+          previous: {
+            object: {
+              id: 1,
+              major: 1,
+              minor: 1,
+              patch: 1,
+              createdAt: 1,
+            },
+          },
+        },
+      },*/
+    ])
+    .map((item) => {
+      return {
+        ...item,
+        previous: Array.isArray(item.previous) ? item.previous[0] : null,
+      }
+    })
+    .toArray()
+
+  const allSlides = await denormalizedSlideAudits
+    .aggregate([
+      {
+        $lookup: {
+          from: 'denormalizedSlideAudits',
+          localField: 'previous',
+          foreignField: '_id',
+          as: 'previous',
+        },
+      },
+      {
+        $project: {
+          id: 0,
+          createdAt: 0,
+          _createdAt: 0,
+          logTime: 0,
+          entity: 0,
+          ipAddress: 0,
+          userAgent: 0,
+          tracks: {
+            setting: 0,
+            tags: 0,
+            id: 0,
+            createdAt: 0,
+            _createdAt: 0,
+            logTime: 0,
+            entity: 0,
+            ipAddress: 0,
+            userAgent: 0,
+          },
+          previous: {
+            previous: 0,
+            id: 0,
+            createdAt: 0,
+            _createdAt: 0,
+            logTime: 0,
+            entity: 0,
+            ipAddress: 0,
+            userAgent: 0,
+            tracks: {
+              setting: 0,
+              tags: 0,
+              id: 0,
+              createdAt: 0,
+              _createdAt: 0,
+              logTime: 0,
+              entity: 0,
+              ipAddress: 0,
+              userAgent: 0,
+            },
+          },
+        },
+      },
+    ])
+    .map((item) => {
+      return {
+        ...item,
+        previous: Array.isArray(item.previous) ? item.previous[0] : null,
+      }
+    })
+    .toArray()
+
+  await fs.writeFile(
+    'allSlides.json',
+    JSON.stringify(
+      allSlides.map((s) => transformSlide2(s as unknown as SlideSchema, 0)),
+      null,
+      2,
+    ),
+    'utf-8',
+  )
+  await fs.writeFile('all.json', JSON.stringify(dt, null, 2), 'utf-8')
+  await fs.writeFile(
+    'test.json',
+    JSON.stringify(
+      JSON.parse(JSON.stringify(dt)).map((r: Record<string, unknown>) =>
+        transformRev(r, 0),
+      ),
+      null,
+      2,
+    ),
+    {
+      encoding: 'utf-8',
+    },
+  )
 }
 
-main().catch(console.error)
+main()
+  .catch(console.error)
+  .then(() => {
+    process.exit(0)
+  })
